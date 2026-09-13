@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Spatial Network Topology - Quest 3 Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      margin: 0;
+      background-color: #050811;
+      overflow: hidden;
+      font-family: monospace;
+      user-select: none;
+    }
+    #overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: #00ffcc;
+      z-index: 10;
+      pointer-events: none;
+    }
+    h1 { margin: 0 0 4px 0; font-size: 1.2rem; }
+    p { margin: 0; font-size: 0.85rem; color: #8899aa; }
+  </style>
+  <!-- Three.js from unpkg CDN -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/examples/js/modifiers/CurveModifier.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/examples/js/webxr/VRButton.js"></script>
+</head>
+<body>
+  <div id="overlay">
+    <h1>Subnet Topology WebXR</h1>
+    <p>Point controller laser to inspect devices | Thumbstick to move</p>
+  </div>
+
+  <script>
+    // --- Mock Subnet Topology Dataset ---
+    const NETWORK_DATA = {
+      nodes: [
+        // Infrastructure
+        { id: 'gw', name: 'Gateway / Router', ip: '192.168.1.1', mac: '18:E8:29:44:A1:01', vlan: 'Default (1)', port: 'WAN/Eth0', role: 'infra', baseRx: 142.5, baseTx: 28.3, pos: [0, 2.1, -2.5], color: 0x00e5ff },
+        { id: 'sw', name: 'Core Switch 16-PoE', ip: '192.168.1.2', mac: '18:E8:29:72:B5:12', vlan: 'Default (1)', port: 'Port 1 (Trunk)', role: 'infra', baseRx: 130.0, baseTx: 90.0, pos: [0, 1.4, -2.5], color: 0x0088ff },
+        { id: 'ap', name: 'U6-Pro Access Point', ip: '192.168.1.3', mac: '74:83:C2:11:F9:33', vlan: 'Default (1)', port: 'Port 8 (PoE+)', role: 'infra', baseRx: 45.2, baseTx: 12.0, pos: [1.2, 1.8, -2.0], color: 0x33ccff },
+
+        // Wired Clients (VLAN 1 / Storage & Compute)
+        { id: 'nas', name: 'TrueNAS Core', ip: '192.168.1.50', mac: '00:11:32:8A:3F:1B', vlan: 'LAN (1)', port: 'Port 2 (LACP)', role: 'client', baseRx: 65.4, baseTx: 82.1, pos: [-1.4, 1.0, -2.2], color: 0xffaa00 },
+        { id: 'pc', name: 'ThinkPad T14 Workstation', ip: '192.168.1.101', mac: '48:2A:E3:6C:55:04', vlan: 'LAN (1)', port: 'Port 4 (1GbE)', role: 'client', baseRx: 24.1, baseTx: 6.8, pos: [-0.6, 0.9, -1.6], color: 0x00ff88 },
+        { id: 'tv', name: 'Apple TV 4K', ip: '192.168.1.120', mac: 'A4:83:E7:33:91:0F', vlan: 'LAN (1)', port: 'Port 5 (1GbE)', role: 'client', baseRx: 28.5, baseTx: 0.8, pos: [-1.0, 0.7, -3.2], color: 0xa855f7 },
+
+        // IoT / Isolated Clients (VLAN 20)
+        { id: 'cam', name: 'UniFi Protect G4 Cam', ip: '192.168.20.10', mac: '74:83:C2:5F:AA:19', vlan: 'Security (20)', port: 'Port 7 (PoE)', role: 'iot', baseRx: 0.1, baseTx: 8.5, pos: [0.8, 1.1, -3.2], color: 0xef4444 },
+        { id: 'printer', name: 'Adventurer 5M 3D Printer', ip: '192.168.20.25', mac: 'CC:50:E3:12:04:88', vlan: 'IoT (20)', port: 'Wi-Fi (AP)', role: 'iot', baseRx: 0.2, baseTx: 0.1, pos: [1.8, 0.9, -1.8], color: 0xf59e0b },
+        { id: 'thermo', name: 'Smart Thermostat', ip: '192.168.20.40', mac: '50:C7:BF:99:A2:3E', vlan: 'IoT (20)', port: 'Wi-Fi (AP)', role: 'iot', baseRx: 0.05, baseTx: 0.02, pos: [1.6, 1.3, -2.8], color: 0x10b981 }
+      ],
+      links: [
+        { from: 'gw', to: 'sw', speed: '2.5G SFP+' },
+        { from: 'sw', to: 'ap', speed: '1G PoE' },
+        { from: 'sw', to: 'nas', speed: '2x 1G LACP' },
+        { from: 'sw', to: 'pc', speed: '1G Ethernet' },
+        { from: 'sw', to: 'tv', speed: '1G Ethernet' },
+        { from: 'sw', to: 'cam', speed: '100M PoE' },
+        { from: 'ap', to: 'printer', speed: 'Wi-Fi 2.4GHz' },
+        { from: 'ap', to: 'thermo', speed: 'Wi-Fi 2.4GHz' }
+      ]
+    };
+
+    // --- Scene & Renderer Setup ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 100);
+    
+    // Camera Rig for Locomotion
+    const cameraRig = new THREE.Group();
+    cameraRig.position.set(0, 0, 0);
+    cameraRig.add(camera);
+    scene.add(cameraRig);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    // Spatial Lighting
+    const ambientLight = new THREE.AmbientLight(0x223344, 2);
+    scene.add(ambientLight);
+    const centerPointLight = new THREE.PointLight(0x00ffff, 3, 10);
+    centerPointLight.position.set(0, 2, -2.5);
+    scene.add(centerPointLight);
+
+    // Floor Grid for spatial grounding
+    const gridHelper = new THREE.GridHelper(10, 20, 0x00ffff, 0x112233);
+    gridHelper.position.y = -0.01;
+    scene.add(gridHelper);
+
+    // --- Build Visual Topology Graph ---
+    const nodeMap = new Map();
+    const clickableNodes = [];
+    const packetParticles = [];
+
+    // Geometries
+    const geomBox = new THREE.BoxGeometry(0.24, 0.1, 0.2);
+    const geomCylinder = new THREE.CylinderGeometry(0.18, 0.18, 0.08, 24);
+    const geomSphere = new THREE.SphereGeometry(0.12, 16, 16);
+
+    NETWORK_DATA.nodes.forEach(data => {
+      let geom = geomSphere;
+      if (data.id === 'gw') geom = geomCylinder;
+      else if (data.role === 'infra' || data.id === 'nas') geom = geomBox;
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: data.color,
+        emissive: data.color,
+        emissiveIntensity: 0.35,
+        roughness: 0.2,
+        metalness: 0.8
+      });
+
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(...data.pos);
+      mesh.userData = { ...data };
+      scene.add(mesh);
+
+      // Add a subtle rotating pulse ring around infrastructure
+      if (data.role === 'infra') {
+        const ringGeom = new THREE.RingGeometry(0.25, 0.28, 32);
+        const ringMat = new THREE.MeshBasicMaterial({ color: data.color, side: THREE.DoubleSide, opacity: 0.4, transparent: true });
+        const ring = new THREE.Mesh(ringGeom, ringMat);
+        ring.rotation.x = Math.PI / 2;
+        mesh.add(ring);
+      }
+
+      nodeMap.set(data.id, mesh);
+      clickableNodes.push(mesh);
+    });
+
+    // --- Link Lines & Traffic Packet Flow ---
+    NETWORK_DATA.links.forEach(link => {
+      const startNode = nodeMap.get(link.from);
+      const endNode = nodeMap.get(link.to);
+      if (!startNode || !endNode) return;
+
+      const points = [startNode.position, endNode.position];
+      const curve = new THREE.LineCurve3(startNode.position, endNode.position);
+      
+      // Base link cable
+      const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
+      const lineMat = new THREE.LineBasicMaterial({ color: 0x334466, transparent: true, opacity: 0.5 });
+      const line = new THREE.Line(lineGeom, lineMat);
+      scene.add(line);
+
+      // Flowing data packets along line
+      const packetGeom = new THREE.SphereGeometry(0.02, 8, 8);
+      const packetMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+      const packet = new THREE.Mesh(packetGeom, packetMat);
+      scene.add(packet);
+
+      packetParticles.push({
+        mesh: packet,
+        curve: curve,
+        progress: Math.random(),
+        speed: 0.003 + Math.random() * 0.007
+      });
+    });
+
+    // --- Holographic Data HUD (Canvas Texture) ---
+    const hudCanvas = document.createElement('canvas');
+    hudCanvas.width = 512;
+    hudCanvas.height = 320;
+    const hudContext = hudCanvas.getContext('2d');
+    const hudTexture = new THREE.CanvasTexture(hudCanvas);
+
+    const hudPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.8, 0.5),
+      new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
+    );
+    hudPlane.visible = false;
+    scene.add(hudPlane);
+
+    function updateHUD(nodeData) {
+      hudContext.clearRect(0, 0, 512, 320);
+
+      // Glass HUD Background Panel
+      hudContext.fillStyle = 'rgba(8, 16, 28, 0.9)';
+      hudContext.strokeStyle = '#00ffcc';
+      hudContext.lineWidth = 4;
+      hudContext.beginPath();
+      hudContext.roundRect(4, 4, 504, 312, 16);
+      hudContext.fill();
+      hudContext.stroke();
+
+      // Title Banner
+      hudContext.fillStyle = '#00ffcc';
+      hudContext.font = 'bold 24px monospace';
+      hudContext.fillText(nodeData.name, 24, 46);
+
+      // Separator
+      hudContext.strokeStyle = 'rgba(0, 255, 204, 0.3)';
+      hudContext.lineWidth = 2;
+      hudContext.beginPath();
+      hudContext.moveTo(24, 62);
+      hudContext.lineTo(488, 62);
+      hudContext.stroke();
+
+      // Telemetry Data Lines
+      hudContext.fillStyle = '#ffffff';
+      hudContext.font = '18px monospace';
+      hudContext.fillText(`IP Address:  ${nodeData.ip}`, 24, 100);
+      hudContext.fillText(`MAC:         ${nodeData.mac}`, 24, 132);
+      hudContext.fillText(`VLAN:        ${nodeData.vlan}`, 24, 164);
+      hudContext.fillText(`Switch Port: ${nodeData.port}`, 24, 196);
+
+      // Live simulated bandwidth telemetry
+      const jitterRx = (nodeData.baseRx + (Math.random() * 4 - 2)).toFixed(1);
+      const jitterTx = (nodeData.baseTx + (Math.random() * 2 - 1)).toFixed(1);
+
+      hudContext.fillStyle = '#38bdf8';
+      hudContext.fillText(`RX Rate:     ${jitterRx} Mbps`, 24, 238);
+      hudContext.fillStyle = '#4ade80';
+      hudContext.fillText(`TX Rate:     ${jitterTx} Mbps`, 24, 270);
+
+      hudTexture.needsUpdate = true;
+    }
+
+    // --- WebXR Controller Setup (Quest 3 Raycaster) ---
+    const raycaster = new THREE.Raycaster();
+    const tempMatrix = new THREE.Matrix4();
+    let intersectedNode = null;
+
+    // Right Controller (Laser Pointer)
+    const controller = renderer.xr.getController(0);
+    cameraRig.add(controller);
+
+    const laserGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -3)]);
+    const laserMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.6 });
+    const laser = new THREE.Line(laserGeom, laserMat);
+    controller.add(laser);
+
+    // Controller events
+    controller.addEventListener('selectstart', () => {
+      if (intersectedNode) {
+        // Position HUD above the clicked node facing the user
+        const pos = intersectedNode.position;
+        hudPlane.position.set(pos.x, pos.y + 0.45, pos.z);
+        hudPlane.lookAt(camera.position);
+        hudPlane.visible = true;
+        updateHUD(intersectedNode.userData);
+      }
+    });
+
+    // --- Thumbstick Smooth Locomotion ---
+    function handleThumbstickMovement() {
+      const session = renderer.xr.getSession();
+      if (!session) return;
+
+      for (const source of session.inputSources) {
+        if (source.gamepad && source.gamepad.axes) {
+          const axes = source.gamepad.axes;
+          // Standard XR Gamepad thumbstick mapping: axes[2] is X, axes[3] is Y
+          const x = axes[2] || 0;
+          const y = axes[3] || 0;
+
+          if (Math.abs(x) > 0.1 || Math.abs(y) > 0.1) {
+            const moveSpeed = 0.04;
+            // Get forward camera vector without pitch tilt
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0;
+            forward.normalize();
+
+            const right = new THREE.Vector3();
+            right.crossVectors(camera.up, forward).negate();
+
+            cameraRig.position.addScaledVector(forward, -y * moveSpeed);
+            cameraRig.position.addScaledVector(right, x * moveSpeed);
+          }
+        }
+      }
+    }
+
+    // --- Render Loop ---
+    renderer.setAnimationLoop(() => {
+      // 1. Move packet particles along link paths
+      packetParticles.forEach(p => {
+        p.progress += p.speed;
+        if (p.progress > 1) p.progress = 0;
+        p.mesh.position.copy(p.curve.getPoint(p.progress));
+      });
+
+      // 2. Controller raycasting
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const intersects = raycaster.intersectObjects(clickableNodes);
+
+      if (intersects.length > 0) {
+        if (intersectedNode !== intersects[0].object) {
+          if (intersectedNode) intersectedNode.scale.set(1, 1, 1);
+          intersectedNode = intersects[0].object;
+          intersectedNode.scale.set(1.25, 1.25, 1.25);
+        }
+      } else {
+        if (intersectedNode) intersectedNode.scale.set(1, 1, 1);
+        intersectedNode = null;
+      }
+
+      // 3. Keep HUD oriented towards player camera
+      if (hudPlane.visible) {
+        hudPlane.lookAt(camera.position);
+      }
+
+      // 4. Locomotion
+      handleThumbstickMovement();
+
+      renderer.render(scene, camera);
+    });
+
+    // Window resizing
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
